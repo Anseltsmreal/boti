@@ -1,176 +1,147 @@
-/**
- * PPOB WhatsApp Bot System
- * * Fitur:
- * 1. Dashboard Admin (Express.js)
- * 2. WhatsApp Bot Integration (whatsapp-web.js)
- * 3. Database MySQL Implementation
- * 4. Multi-API Provider (Digiflazz, Okeconnect, etc.)
- * 5. User Balance & Registration System
- */
-
 const express = require('express');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
-const mysql = require('mysql2/promise');
+const fs = require('fs');
+const path = require('path');
 const bodyParser = require('body-parser');
-const axios = require('axios');
 
 const app = express();
 app.use(bodyParser.json());
 app.use(express.static('public'));
 
-// --- DATABASE CONFIGURATION & TABLES ---
-/*
-  SQL Schema (Run this in your MySQL):
-  
-  CREATE DATABASE ppob_bot;
-  USE ppob_bot;
+// --- CONFIG KEAMANAN ADMIN ---
+const ADMIN_USER = 'admin';       
+const ADMIN_PASS = 'Ansel789!'; // Ganti password ini!
 
-  CREATE TABLE users (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    whatsapp_number VARCHAR(20) UNIQUE,
-    name VARCHAR(100),
-    balance DECIMAL(15, 2) DEFAULT 0.00,
-    role ENUM('user', 'admin') DEFAULT 'user',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-  );
+// --- JSON DATABASE SYSTEM ---
+const DB_PATH = './database_json';
+if (!fs.existsSync(DB_PATH)) fs.mkdirSync(DB_PATH);
 
-  CREATE TABLE api_configs (
-    provider_name VARCHAR(50) PRIMARY KEY,
-    api_key TEXT,
-    api_secret TEXT,
-    base_url TEXT,
-    is_active BOOLEAN DEFAULT false
-  );
+const files = {
+    users: path.join(DB_PATH, 'users.json'),
+    api_configs: path.join(DB_PATH, 'api_configs.json'),
+    products: path.join(DB_PATH, 'products.json'),
+    transactions: path.join(DB_PATH, 'transactions.json'),
+    deposits: path.join(DB_PATH, 'deposits.json')
+};
 
-  CREATE TABLE products (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    code VARCHAR(50) UNIQUE,
-    name VARCHAR(100),
-    price DECIMAL(15, 2),
-    provider VARCHAR(50),
-    category VARCHAR(50),
-    status ENUM('active', 'inactive') DEFAULT 'active'
-  );
+Object.values(files).forEach(file => {
+    if (!fs.existsSync(file)) fs.writeFileSync(file, JSON.stringify([]));
+});
 
-  CREATE TABLE transactions (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    user_id INT,
-    product_code VARCHAR(50),
-    target_number VARCHAR(50),
-    amount DECIMAL(15, 2),
-    status ENUM('pending', 'success', 'failed') DEFAULT 'pending',
-    ref_id VARCHAR(100),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(id)
-  );
-*/
-
-let db;
-async function connectDB() {
-    db = await mysql.createConnection({
-        host: 'localhost',
-        user: 'yhbohnqt_ansetsm',
-        password: 'anseltsm',
-        database: 'yhbohnqt_ppob_bot'
-    });
-    console.log('Database Connected.');
+function readData(key) {
+    try { return JSON.parse(fs.readFileSync(files[key])); } catch (e) { return []; }
 }
+
+function writeData(key, data) {
+    fs.writeFileSync(files[key], JSON.stringify(data, null, 2));
+}
+
+// Middleware Autentikasi
+const auth = (req, res, next) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader) return res.status(401).json({ message: 'Auth Required' });
+    const credentials = Buffer.from(authHeader.split(' ')[1], 'base64').toString().split(':');
+    if (credentials[0] === ADMIN_USER && credentials[1] === ADMIN_PASS) next();
+    else res.status(401).json({ message: 'Invalid Credentials' });
+};
 
 // --- WHATSAPP BOT LOGIC ---
 const client = new Client({
     authStrategy: new LocalAuth(),
-    puppeteer: { headless: true }
+    puppeteer: { 
+        headless: true,
+        executablePath: '/usr/bin/google-chrome-stable', 
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'] 
+    }
 });
 
-client.on('qr', (qr) => {
-    // Di dashboard web, kita akan menampilkan ini sebagai gambar
-    qrcode.generate(qr, { small: true });
-    console.log('QR Code generated. Scan to login.');
-});
-
-client.on('ready', () => {
-    console.log('WhatsApp Bot is ready!');
-});
+client.on('qr', (qr) => { qrcode.generate(qr, { small: true }); });
+client.on('ready', () => { console.log('WhatsApp Bot Ready!'); });
 
 client.on('message', async (msg) => {
     const sender = msg.from.split('@')[0];
     const text = msg.body.toLowerCase();
+    let users = readData('users');
+    let products = readData('products');
+    const user = users.find(u => u.whatsapp_number === sender);
 
-    // 1. Fitur Mendaftar
     if (text === '.daftar') {
-        try {
-            const [rows] = await db.execute('SELECT * FROM users WHERE whatsapp_number = ?', [sender]);
-            if (rows.length > 0) {
-                msg.reply('Anda sudah terdaftar dalam sistem.');
-            } else {
-                await db.execute('INSERT INTO users (whatsapp_number, name) VALUES (?, ?)', [sender, 'User ' + sender]);
-                msg.reply('Pendaftaran berhasil! Ketik .menu untuk melihat layanan.');
-            }
-        } catch (e) { console.error(e); }
+        if (user) return msg.reply('Sudah terdaftar.');
+        users.push({ id: Date.now(), whatsapp_number: sender, balance: 0, role: 'user' });
+        writeData('users', users);
+        msg.reply('Berhasil daftar! Ketik .menu');
     }
 
-    // 2. Cek Saldo & Menu
     if (text === '.menu' || text === '.saldo') {
-        const [user] = await db.execute('SELECT balance FROM users WHERE whatsapp_number = ?', [sender]);
-        if (user.length === 0) return msg.reply('Silahkan daftar terlebih dahulu dengan ketik .daftar');
-        
-        msg.reply(`👋 Halo!\n\nSaldo Anda: Rp ${user[0].balance.toLocaleString()}\n\nMenu Layanan:\n1. .pulsa [nomor] [kode]\n2. .pln [id_pelanggan] [kode]\n3. .deposit [jumlah]\n\nKetik .produk untuk melihat list kode.`);
+        if (!user) return msg.reply('Daftar dulu via .daftar');
+        msg.reply(`Saldo: Rp ${user.balance.toLocaleString()}\n\nMenu:\n.pulsa [nomor] [kode]\n.deposit [jumlah]\n.produk`);
     }
 
-    // 3. Simulasi Transaksi PPOB
-    if (text.startsWith('.pulsa ')) {
-        const parts = text.split(' ');
-        if (parts.length < 3) return msg.reply('Format salah. Contoh: .pulsa 08123xxx S5');
-        
-        const target = parts[1];
-        const code = parts[2].toUpperCase();
+    if (text.startsWith('.deposit ')) {
+        const amount = parseInt(text.split(' ')[1]);
+        if (amount < 10000) return msg.reply('Minimal Rp 10.000');
+        const configs = readData('api_configs');
+        const pay = configs.find(c => c.provider_name === 'sakurupiah');
+        if (!pay) return msg.reply('Gateway belum siap.');
 
-        // Validasi produk & saldo
-        const [prod] = await db.execute('SELECT * FROM products WHERE code = ? AND status = "active"', [code]);
-        const [usr] = await db.execute('SELECT * FROM users WHERE whatsapp_number = ?', [sender]);
+        const refId = 'REF' + Date.now();
+        let deposits = readData('deposits');
+        deposits.push({ reference: refId, user_id: user.id, amount, status: 'pending', created_at: new Date() });
+        writeData('deposits', deposits);
 
-        if (prod.length === 0) return msg.reply('Produk tidak ditemukan.');
-        if (usr[0].balance < prod[0].price) return msg.reply('Saldo tidak cukup.');
+        msg.reply(`Bayar di sini: ${pay.base_url}/pay?m=${pay.api_key}&ref=${refId}&amt=${amount}`);
+    }
 
-        // Proses API (Contoh ke Digiflazz)
-        // const response = await axios.post('API_URL', { code, target });
-        
-        // Update Saldo & Catat Transaksi (Mockup Success)
-        await db.execute('UPDATE users SET balance = balance - ? WHERE id = ?', [prod[0].price, usr[0].id]);
-        await db.execute('INSERT INTO transactions (user_id, product_code, target_number, amount, status) VALUES (?, ?, ?, ?, "success")', 
-            [usr[0].id, code, target, prod[0].price]);
-
-        msg.reply(`✅ Transaksi Berhasil!\nProduk: ${prod[0].name}\nTujuan: ${target}\nSisa Saldo: Rp ${(usr[0].balance - prod[0].price).toLocaleString()}`);
+    if (text === '.produk') {
+        let list = products.map(p => `${p.code}: ${p.name} (Rp ${p.price})`).join('\n');
+        msg.reply(list || 'Produk kosong.');
     }
 });
 
-// --- DASHBOARD API ROUTES ---
+// --- API ROUTES ---
+app.get('/api/products', auth, (req, res) => res.json(readData('products')));
+app.get('/api/deposits', auth, (req, res) => res.json(readData('deposits')));
 
-// Ambil Status Koneksi API
-app.get('/api/config', async (req, res) => {
-    const [rows] = await db.execute('SELECT * FROM api_configs');
-    res.json(rows);
+app.post('/api/products', auth, (req, res) => {
+    let prods = readData('products');
+    const index = prods.findIndex(p => p.code === req.body.code.toUpperCase());
+    if (index > -1) prods[index] = req.body; else prods.push(req.body);
+    writeData('products', prods);
+    res.json({ message: 'Success' });
 });
 
-// Update API Config (Digiflazz/Tokovoucher/dll)
-app.post('/api/config/update', async (req, res) => {
-    const { provider, key, secret, url, active } = req.body;
-    await db.execute('REPLACE INTO api_configs (provider_name, api_key, api_secret, base_url, is_active) VALUES (?, ?, ?, ?, ?)', 
-        [provider, key, secret, url, active]);
-    res.json({ message: 'Configuration updated successfully' });
+app.delete('/api/products/:code', auth, (req, res) => {
+    let prods = readData('products').filter(p => p.code !== req.params.code.toUpperCase());
+    writeData('products', prods);
+    res.json({ message: 'Deleted' });
 });
 
-// Kelola Produk
-app.get('/api/products', async (req, res) => {
-    const [rows] = await db.execute('SELECT * FROM products');
-    res.json(rows);
+app.post('/api/config/update', auth, (req, res) => {
+    let configs = readData('api_configs');
+    const index = configs.findIndex(c => c.provider_name === req.body.provider);
+    if (index > -1) configs[index] = req.body; else configs.push(req.body);
+    writeData('api_configs', configs);
+    res.json({ message: 'Config Updated' });
 });
 
-// Start Server & Bot
-const PORT = 3000;
-app.listen(PORT, async () => {
-    await connectDB();
-    client.initialize();
-    console.log(`Admin Dashboard running on http://localhost:${PORT}`);
+// Webhook SakuRupiah
+app.post('/webhook/sakurupiah', (req, res) => {
+    const { reference, status, amount } = req.body;
+    if (status === 'success') {
+        let deps = readData('deposits');
+        let users = readData('users');
+        const dIdx = deps.findIndex(d => d.reference === reference && d.status === 'pending');
+        if (dIdx > -1) {
+            const uIdx = users.findIndex(u => u.id === deps[dIdx].user_id);
+            deps[dIdx].status = 'success';
+            users[uIdx].balance += parseInt(amount);
+            writeData('deposits', deps);
+            writeData('users', users);
+            client.sendMessage(`${users[uIdx].whatsapp_number}@c.us`, `Deposit Berhasil! Saldo +Rp ${amount}`);
+        }
+    }
+    res.send('OK');
 });
+
+app.listen(3000, () => { console.log('Server running on port 3000'); client.initialize(); });
