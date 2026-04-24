@@ -11,9 +11,9 @@ const app = express();
 app.use(bodyParser.json());
 
 // ==========================================
-// 1. KONFIGURASI UTAMA
+// 1. KONFIGURASI ADMIN
 // ==========================================
-const ADMIN_NUMBER = '110762995499017'; // Nomor Admin Anda
+const ADMIN_NUMBER = '110762995499017'; 
 
 const DB_PATH = './database_json';
 if (!fs.existsSync(DB_PATH)) fs.mkdirSync(DB_PATH);
@@ -25,7 +25,6 @@ const files = {
     transactions: path.join(DB_PATH, 'transactions.json')
 };
 
-// Fungsi Helper Database
 function readData(key) {
     try {
         if (!fs.existsSync(files[key])) {
@@ -34,22 +33,15 @@ function readData(key) {
         }
         const data = fs.readFileSync(files[key], 'utf8');
         return data ? JSON.parse(data) : [];
-    } catch (e) {
-        console.error(`Gagal membaca ${key}:`, e.message);
-        return [];
-    }
+    } catch (e) { return []; }
 }
 
 function writeData(key, data) {
-    try {
-        fs.writeFileSync(files[key], JSON.stringify(data, null, 2));
-    } catch (e) {
-        console.error(`Gagal menulis ${key}:`, e.message);
-    }
+    fs.writeFileSync(files[key], JSON.stringify(data, null, 2));
 }
 
 // ==========================================
-// 2. INISIALISASI BOT
+// 2. BOT ENGINE
 // ==========================================
 const client = new Client({
     authStrategy: new LocalAuth(),
@@ -61,105 +53,76 @@ const client = new Client({
 });
 
 client.on('qr', qr => qrcode.generate(qr, { small: true }));
-client.on('ready', () => console.log('✅ Bot PPOB Tokovoucher Siap!'));
+client.on('ready', () => console.log('✅ Bot PPOB Tokovoucher Aktif & Siap Transaksi!'));
 
-// ==========================================
-// 3. LOGIKA PESAN MASUK
-// ==========================================
 client.on('message', async (msg) => {
     const sender = msg.from.split('@')[0];
     const body = msg.body ? msg.body.trim() : "";
     const args = body.split('|');
     const command = args[0].toLowerCase();
 
-    // Load Data Terkini
     let users = readData('users');
     let products = readData('products');
     let configs = readData('api_configs');
     let trxs = readData('transactions');
     
-    // Cari Profil User
     const user = users.find(u => u.whatsapp_number === sender);
     const isOwner = (sender === ADMIN_NUMBER);
 
-    // --- FITUR DAFTAR (Wajib bagi siapa saja) ---
     if (command === '.daftar') {
-        if (user) return msg.reply('❌ Anda sudah terdaftar di database.');
-        users.push({ 
-            id: Date.now(), 
-            whatsapp_number: sender, 
-            balance: 0, 
-            role: isOwner ? 'admin' : 'member' 
-        });
+        if (user) return msg.reply('❌ Anda sudah terdaftar.');
+        users.push({ id: Date.now(), whatsapp_number: sender, balance: 0, role: isOwner ? 'admin' : 'member' });
         writeData('users', users);
-        return msg.reply('✅ Pendaftaran Berhasil!\nKetik *.menu* untuk melihat layanan.');
+        return msg.reply('✅ Pendaftaran Berhasil! Ketik .menu');
     }
 
-    // --- PENGAMAN UTAMA (Mencegah Error TypeError: balance) ---
-    // Jika perintah diawali titik dan user belum terdaftar, STOP di sini.
+    // Guard: Pastikan User terdaftar
     if (body.startsWith('.') && !user && command !== '.daftar') {
-        return msg.reply('⚠️ Nomor Anda belum terdaftar.\nKetik *.daftar* terlebih dahulu agar bisa menggunakan fitur bot.');
+        return msg.reply('⚠️ Silakan ketik *.daftar* dulu.');
+    }
+
+    // --- MENU UTAMA ---
+    if (command === '.menu' || command === '.p') {
+        let m = `*MENU PPOB* 👋\nSaldo: Rp ${user.balance.toLocaleString()}\n\n1️⃣ PULSA\n2️⃣ DATA\n3️⃣ GAME\n\nKetik *.produk* untuk semua kode.`;
+        return msg.reply(m);
+    }
+
+    if (command === '.produk') {
+        if (products.length === 0) return msg.reply('Produk kosong.');
+        let txt = `*LIST HARGA:*\n` + products.map(x => `• ${x.code} - ${x.name} (Rp ${x.price.toLocaleString()})`).join('\n');
+        return msg.reply(txt);
     }
 
     // ==========================================
-    // 4. PERINTAH USER (MEMBER & ADMIN)
+    // 3. LOGIKA BELI (FIXED)
     // ==========================================
-    
-    if (command === '.menu' || command === '.p' || command === '.produk') {
-        if (command === '.menu') {
-            let m = `*MENU UTAMA PPOB* 👋\n`;
-            m += `💰 Saldo: Rp ${(user.balance).toLocaleString()}\n\n`;
-            m += `Ketik angka untuk pilih kategori:\n`;
-            m += `1️⃣ *PULSA*\n2️⃣ *DATA*\n3️⃣ *GAME*\n4️⃣ *INFO AKUN*\n\n`;
-            m += `Atau ketik *.produk* untuk semua list harga.`;
-            return msg.reply(m);
-        }
-        
-        if (command === '.produk' || command === '.p') {
-            if (products.length === 0) return msg.reply('📭 Produk belum tersedia.');
-            let txt = `*DAFTAR HARGA PRODUK*\n\n` + products.map(x => `• ${x.code} - ${x.name} (Rp ${x.price.toLocaleString()})`).join('\n');
-            return msg.reply(txt);
-        }
-    }
-
-    // Sub-Menu Pilihan Angka
-    if (command === '1') {
-        const p = products.filter(x => x.name.toLowerCase().includes('pulsa'));
-        if (p.length === 0) return msg.reply('Produk pulsa belum tersedia.');
-        let txt = `*LIST PULSA:*\n` + p.map(x => `- ${x.code}: ${x.name} (Rp ${x.price.toLocaleString()})`).join('\n');
-        return msg.reply(txt + `\n\nCara beli: *.beli nomor|kode*`);
-    }
-
-    if (command === '4') {
-        return msg.reply(`*INFO AKUN ANDA*\n\nNomor: ${sender}\nSaldo: Rp ${user.balance.toLocaleString()}\nStatus: ${user.role || 'Member'}`);
-    }
-
-    // --- LOGIKA TRANSAKSI TOKOVOUCHER ---
     if (command === '.beli') {
-        if (args.length < 3) return msg.reply('❌ Format: .beli nomor|kode\nContoh: .beli 0812345|S10');
+        if (args.length < 3) return msg.reply('❌ Format: .beli nomor|kode\nContoh: .beli 08123|S10');
         
         const target = args[1].trim();
         const code = args[2].trim().toUpperCase();
         const serverId = args[3] ? args[3].trim() : "";
 
         const prod = products.find(p => p.code === code);
-        if (!prod) return msg.reply('❌ Kode produk tidak valid.');
+        if (!prod) return msg.reply('❌ Kode produk tidak ditemukan.');
 
         if (user.balance < prod.price) {
-            return msg.reply(`❌ *SALDO KURANG!*\nHarga: Rp ${prod.price.toLocaleString()}\nSaldo: Rp ${user.balance.toLocaleString()}`);
+            return msg.reply(`❌ Saldo tidak cukup! Harga: Rp ${prod.price.toLocaleString()}`);
         }
 
         const api = configs.find(c => c.provider_name === 'tokovoucher');
-        if (!api) return msg.reply('❌ API Tokovoucher belum di-setup oleh Admin.');
-
-        msg.reply(`⏳ Sedang memproses transaksi *${prod.name}*...`);
+        if (!api) return msg.reply('❌ API Tokovoucher belum di-set oleh Admin.');
 
         try {
+            await msg.reply(`⏳ Sedang memproses *${prod.name}*...`);
+
             const refId = 'TRX' + Date.now();
+            // Signature sesuai dokumentasi: md5(MEMBER_CODE:SECRET:REF_ID)
             const signature = crypto.createHash('md5')
                 .update(`${api.api_key}:${api.api_secret}:${refId}`)
                 .digest('hex');
 
+            // Eksekusi API
             const response = await axios.post('https://api.tokovoucher.net/v1/transaksi', {
                 ref_id: refId,
                 produk: code,
@@ -167,11 +130,13 @@ client.on('message', async (msg) => {
                 server_id: serverId,
                 member_code: api.api_key,
                 signature: signature
-            });
+            }, { timeout: 30000 }); // Timeout 30 detik agar tidak gantung
 
             const result = response.data;
+            console.log("Respon Tokovoucher:", result);
 
-            if (result.status === 'success' || result.status === 1) {
+            // Cek Status (Tokovoucher biasanya mengembalikan status 1 untuk sukses)
+            if (result.status === 'success' || result.status === 1 || result.status === '1') {
                 const uIdx = users.findIndex(u => u.whatsapp_number === sender);
                 users[uIdx].balance -= prod.price;
                 writeData('users', users);
@@ -179,27 +144,28 @@ client.on('message', async (msg) => {
                 trxs.push({ id: refId, user: sender, target, prod: prod.name, status: 'SUKSES', sn: result.sn || '-' });
                 writeData('transactions', trxs);
 
-                return msg.reply(`✅ *TRANSAKSI BERHASIL*\n\nID: ${refId}\nItem: ${prod.name}\nTujuan: ${target}\nSN: ${result.sn || '-'}\nSisa Saldo: Rp ${users[uIdx].balance.toLocaleString()}`);
-            } else if (result.status === 'pending') {
+                return msg.reply(`✅ *TRANSAKSI BERHASIL*\n\nID: ${refId}\nItem: ${prod.name}\nNomor: ${target}\nSN: ${result.sn || '-'}\nSisa Saldo: Rp ${users[uIdx].balance.toLocaleString()}`);
+            } 
+            else if (result.status === 'pending') {
                 const uIdx = users.findIndex(u => u.whatsapp_number === sender);
                 users[uIdx].balance -= prod.price;
                 writeData('users', users);
-                return msg.reply(`⏳ *TRANSAKSI PENDING*\nSaldo terpotong, pesanan diproses.\nID: ${refId}`);
-            } else {
-                return msg.reply(`❌ *TRANSAKSI GAGAL*\nAlasan: ${result.message || 'Ditolak API'}`);
+                return msg.reply(`⏳ *TRANSAKSI PENDING*\nSaldo terpotong, silakan cek SN nanti.\nID: ${refId}`);
+            } 
+            else {
+                return msg.reply(`❌ *TRANSAKSI GAGAL*\nPesan: ${result.message || 'Ditolak Provider'}`);
             }
         } catch (err) {
-            return msg.reply('❌ Error: Gagal menghubungi server provider.');
+            console.error("EROR API:", err.response ? err.response.data : err.message);
+            return msg.reply('❌ Gagal terhubung ke server Tokovoucher. Cek koneksi VPS Anda.');
         }
     }
 
-    // ==========================================
-    // 5. FITUR ADMIN (KHUSUS NOMOR ADMIN)
-    // ==========================================
+    // --- ADMIN COMMANDS ---
     if (isOwner) {
         if (command === '.addp') {
-            if (args.length < 5) return msg.reply('Format: .addp|KODE|NAMA|HARGA|PROVIDER');
             const [_, sku, name, price, prov] = args;
+            if (!sku || !name || !price) return msg.reply('Format salah.');
             const idx = products.findIndex(p => p.code === sku.toUpperCase());
             const data = { code: sku.toUpperCase(), name, price: parseInt(price), provider: prov.toLowerCase() };
             if (idx > -1) products[idx] = data; else products.push(data);
@@ -207,26 +173,25 @@ client.on('message', async (msg) => {
             return msg.reply(`✅ Produk ${sku} disimpan.`);
         }
 
+        if (command === '.tambahsaldo') {
+            const [_, targetWa, jumlah] = args;
+            const uIdx = users.findIndex(u => u.whatsapp_number === targetWa);
+            if (uIdx === -1) return msg.reply('User tidak ditemukan.');
+            users[uIdx].balance += parseInt(jumlah);
+            writeData('users', users);
+            return msg.reply(`✅ Saldo ${targetWa} +Rp ${parseInt(jumlah).toLocaleString()}`);
+        }
+
         if (command === '.setppob') {
-            if (args.length < 5) return msg.reply('Format: .setppob|tokovoucher|URL|MEMBER_CODE|SECRET');
             const [_, prov, url, key, secret] = args;
             const idx = configs.findIndex(c => c.provider_name === prov.toLowerCase());
             const data = { provider_name: prov.toLowerCase(), base_url: url, api_key: key, api_secret: secret };
             if (idx > -1) configs[idx] = data; else configs.push(data);
             writeData('api_configs', configs);
-            return msg.reply(`✅ API Config ${prov} diperbarui.`);
-        }
-
-        if (command === '.tambahsaldo') {
-            const [_, targetWa, jumlah] = args;
-            const uIdx = users.findIndex(u => u.whatsapp_number === targetWa);
-            if (uIdx === -1) return msg.reply('❌ User belum terdaftar (.daftar).');
-            users[uIdx].balance += parseInt(jumlah);
-            writeData('users', users);
-            return msg.reply(`✅ Saldo ${targetWa} bertambah Rp ${parseInt(jumlah).toLocaleString()}.`);
+            return msg.reply(`✅ Config ${prov} Berhasil.`);
         }
     }
 });
 
 client.initialize();
-app.listen(3000, () => console.log('🚀 Server PPOB Port 3000 Aktif'));
+app.listen(3000);
